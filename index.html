@@ -1,0 +1,330 @@
+<!DOCTYPE html>
+<html><head><title>GAME_NAME</title>
+<style>
+body{margin:0;overflow:hidden;background:#000;font-family:Arial}
+#ui{position:absolute;top:10px;left:10px;color:white;z-index:10;font-size:16px;background:rgba(0,0,0,0.7);padding:10px;border-radius:5px}
+#lobby{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:white;text-align:center;z-index:20;background:rgba(0,0,0,0.8);padding:30px;border-radius:10px}
+#lobby input{padding:10px;font-size:16px;margin:5px;width:200px}
+#lobby button{padding:10px 20px;font-size:16px;cursor:pointer;background:#e94560;color:white;border:none;border-radius:5px;margin:5px}
+#lobby button:hover{background:#ff6b81}
+#lobby .players{margin:10px 0;font-size:14px}
+.hidden{display:none}
+</style>
+<script src="https://cdn.babylonjs.com/babylon.js"></script>
+</head><body>
+<canvas id="c"></canvas>
+<canvas id="minimap" style="position:absolute;bottom:10px;right:10px;width:120px;height:120px;border:2px solid white;background:rgba(0,0,0,0.5);z-index:10"></canvas>
+<div id="ui" class="hidden">
+<div style="font-size:20px">HP: <span id="hp">100</span> | Kills: <span id="kills">0</span></div>
+<div id="crosshair" style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);color:white;font-size:24px;opacity:0.7">+</div>
+</div>
+<div id="lobby"><h2>3D Shooter Lobby</h2>
+<input type="text" id="nickname" placeholder="Nickname" value="Player" style="display:block;margin:10px auto;padding:10px;font-size:16px;width:200px">
+<input type="text" id="roomId" placeholder="Room ID" style="display:block;margin:10px auto;padding:10px;font-size:16px;width:200px">
+<button onclick="createRoom()" style="display:block;margin:10px auto;">Create Race</button>
+<button onclick="joinRoom()" style="display:block;margin:10px auto;">Join Room</button>
+<div class="players" id="playerList"></div>
+<button id="readyBtn" class="hidden" onclick="ready()" style="display:none;margin:10px auto;">Ready</button>
+</div>
+
+<script>
+const canvas=document.getElementById('c');
+const engine=new BABYLON.Engine(canvas,true,{preserveDrawingBuffer:true,stencil:true});
+const scene=new BABYLON.Scene(engine);
+const dirLight=new BABYLON.DirectionalLight("dir",new BABYLON.Vector3(-1,-1,-1),scene);
+dirLight.intensity=0.7;
+dirLight.position=new BABYLON.Vector3(20,30,20);
+new BABYLON.HemisphericLight("light",new BABYLON.Vector3(0,1,0),scene);
+const shadowGenerator=new BABYLON.ShadowGenerator(1024,dirLight);
+shadowGenerator.useBlurExponentialShadowMap=true;
+shadowGenerator.blurKernel=32;
+scene.clearColor=new BABYLON.Color3(0.3,0.6,1.0);
+scene.fogMode=BABYLON.Scene.FOGMODE_LINEAR;
+scene.fogColor=new BABYLON.Color3(0.3,0.6,1.0);
+scene.fogStart=30;
+scene.fogEnd=80;
+
+const camera=new BABYLON.ArcRotateCamera("cam",0,1.2,15,BABYLON.Vector3.Zero(),scene);
+camera.attachControl(canvas,true);
+camera.lowerRadiusLimit=5;
+camera.upperRadiusLimit=30;
+
+const ground=BABYLON.MeshBuilder.CreateGround("g",{width:60,height:60},scene);
+const gmat=new BABYLON.StandardMaterial("gm",scene);
+gmat.diffuseColor=new BABYLON.Color3(0.2,0.5,0.1);
+gmat.specularColor=new BABYLON.Color3(0.02,0.02,0.02);
+ground.material=gmat;
+ground.receiveShadows=true;
+
+// Rocks
+for(let r=0;r<20;r++){
+    const rx=(Math.random()-0.5)*50;
+    const rz=(Math.random()-0.5)*50;
+    const rock=BABYLON.MeshBuilder.CreateSphere("rock_"+r,{diameter:0.5+Math.random()*1.5,segments:4},scene);
+    rock.position=new BABYLON.Vector3(rx,0.2,rz);
+    const rmat=new BABYLON.StandardMaterial("rm_"+r,scene);
+    rmat.diffuseColor=new BABYLON.Color3(0.4,0.35,0.3);
+    rock.material=rmat;
+}
+
+// Map: tile-based walls
+const map=[
+    [0,0,0,0,0,0,0,0,0,0],
+    [0,0,1,0,0,0,0,0,0,0],
+    [0,0,0,0,1,0,0,0,0,0],
+    [0,0,0,0,0,0,1,0,0,0],
+    [0,0,0,0,0,0,0,0,0,0],
+    [0,0,0,0,0,0,0,0,1,0],
+    [0,0,1,0,0,0,0,0,0,0],
+    [0,0,0,0,0,1,0,0,0,0],
+    [0,0,0,0,0,0,0,1,0,0],
+    [0,0,0,0,0,0,0,0,0,0],
+];
+for(let i=0;i<map.length;i++){
+    for(let j=0;j<map[i].length;j++){
+        if(map[i][j]){
+            const wall=BABYLON.MeshBuilder.CreateBox("w_"+i+"_"+j,{width:2,height:3,depth:2},scene);
+            wall.position.x=(i-5)*6;
+            wall.position.z=(j-5)*6;
+            wall.position.y=1.5;
+            const wmat=new BABYLON.StandardMaterial("wm_"+i+"_"+j,scene);
+            wmat.diffuseColor=new BABYLON.Color3(0.6,0.3,0.2);
+            wmat.specularColor=new BABYLON.Color3(0.1,0.1,0.1);
+            wall.material=wmat;
+            shadowGenerator.addShadowCaster(wall);
+            wall.receiveShadows=true;
+        }
+    }
+}
+
+// Trees
+for(let k=0;k<15;k++){
+    const px=(Math.random()-0.5)*50;
+    const pz=(Math.random()-0.5)*50;
+    const h=2+Math.random()*2;
+    const trunk=BABYLON.MeshBuilder.CreateCylinder("trunk_"+k,{height:h,diameterTop:0.15,diameterBottom:0.3},scene);
+    trunk.position=new BABYLON.Vector3(px,h/2,pz);
+    const tmat=new BABYLON.StandardMaterial("tm_"+k,scene);
+    tmat.diffuseColor=new BABYLON.Color3(0.4,0.25,0.1);
+    trunk.material=tmat;
+    const crown=BABYLON.MeshBuilder.CreateSphere("crown_"+k,{diameter:1.2+Math.random()*0.8,segments:5},scene);
+    crown.position=new BABYLON.Vector3(px,h+0.5,pz);
+    const cmat=new BABYLON.StandardMaterial("cm_"+k,scene);
+    cmat.diffuseColor=new BABYLON.Color3(0.15,0.5+Math.random()*0.2,0.1);
+    crown.material=cmat;
+    shadowGenerator.addShadowCaster(trunk);
+    shadowGenerator.addShadowCaster(crown);
+}
+
+// Health packs
+for(let h=0;h<8;h++){
+    const hx=(Math.random()-0.5)*40;
+    const hz=(Math.random()-0.5)*40;
+    const hpBox=BABYLON.MeshBuilder.CreateBox("hp_"+h,{size:0.5},scene);
+    hpBox.position=new BABYLON.Vector3(hx,0.25,hz);
+    const hmat=new BABYLON.StandardMaterial("hmat_"+h,scene);
+    hmat.diffuseColor=new BABYLON.Color3(1,0,0);
+    hmat.emissiveColor=new BABYLON.Color3(0.5,0,0);
+    hpBox.material=hmat;
+    scene.registerBeforeRender(function(){hpBox.rotation.y+=0.02;hpBox.position.y=0.25+Math.sin(Date.now()*0.003+h)*0.1});
+}
+
+const keys={};
+let playerId=null, players={}, myMesh=null, playerMeshes={}, ws=null, gameStarted=false, roomId=null, myNickname='Player';
+
+document.onkeydown=function(e){keys[e.key]=true};
+document.onkeyup=function(e){keys[e.key]=false};
+
+function createRoom(){
+    myNickname=document.getElementById('nickname').value||'Player';
+    ws=new WebSocket('ws://'+location.host+'/ws');
+    setupWS();
+    ws.onopen=function(){ws.send(JSON.stringify({cmd:'create',name:myNickname}))};
+}
+
+function joinRoom(){
+    myNickname=document.getElementById('nickname').value||'Player';
+    roomId=document.getElementById('roomId').value;
+    if(!roomId){alert('Enter Room ID first');return}
+    ws=new WebSocket('ws://'+location.host+'/ws');
+    setupWS();
+    ws.onopen=function(){ws.send(JSON.stringify({cmd:'join',name:myNickname,room:roomId}))};
+}
+
+function ready(){ws.send(JSON.stringify({cmd:'ready'}))}
+
+function setupWS(){
+    ws.onmessage=function(e){
+        const d=JSON.parse(e.data);
+        if(d.type==='lobby'){
+            roomId=d.room;
+            document.getElementById('roomId').value=roomId;
+            document.getElementById('playerList').innerHTML='<b>Room: '+roomId+'</b><br>'+d.players.map(function(p){return p.name+' '+(p.ready?'OK':'WAIT')}).join('<br>');
+            document.getElementById('readyBtn').style.display='block';
+        }
+        else if(d.type==='start'){
+            playerId=d.player_id;
+            document.getElementById('lobby').classList.add('hidden');
+            document.getElementById('ui').classList.remove('hidden');
+            gameStarted=true;
+            spawnPlayerFromModel(d.player_id,d.x,d.z,d.color);
+            d.players.forEach(function(p){spawnPlayer(p.id,p.x,p.z,p.color)});
+            if(!window.audioCtx){window.audioCtx=new(window.AudioContext||window.webkitAudioContext)()}
+            if(!window.bgMusic){
+                window.bgMusic=window.audioCtx.createOscillator();
+                var bgGain=window.audioCtx.createGain();
+                window.bgMusic.connect(bgGain);bgGain.connect(window.audioCtx.destination);
+                window.bgMusic.frequency.value=80;window.bgMusic.type='sawtooth';bgGain.gain.value=0.01;
+                window.bgMusic.start();
+            }
+        }
+        else if(d.type==='kill'){
+            showKillfeed(d.killer,d.victim);
+            if(d.killer===playerId)document.getElementById('kills').textContent=d.killer_kills;
+        }
+        else if(d.type==='state'){
+            d.players.forEach(function(p){updatePlayer(p)});
+            var me=d.players.find(function(p){return p.id===playerId});
+            if(me){
+                var prevHp=parseInt(document.getElementById('hp').textContent)||100;
+                document.getElementById('hp').textContent=me.hp;
+                document.getElementById('kills').textContent=me.kills;
+                if(me.hp<prevHp){document.getElementById('ui').style.background='rgba(255,0,0,0.5)';setTimeout(function(){document.getElementById('ui').style.background='rgba(0,0,0,0.7)'},200)}
+            }
+        }
+        else if(d.type==='player_joined')spawnPlayer(d.player.id,d.player.x,d.player.z,d.player.color);
+        else if(d.type==='player_left')removePlayer(d.player_id);
+    };
+}
+
+
+function spawnPlayerFromModel(pid,x,z,color){
+    // Try to load generated model, fallback to procedural
+    BABYLON.SceneLoader.ImportMesh("","https://assets.ahve.ai/models/","character_"+color.replace('#','')+".glb",scene,function(meshes){
+        var t=new BABYLON.TransformNode("t_"+pid);
+        t.position=new BABYLON.Vector3(x,0,z);
+        meshes.forEach(function(m){m.parent=t});
+        playerMeshes[pid]=t;
+        shadowGenerator.addShadowCaster(t);
+        if(pid===playerId)myMesh=t;
+    },null,function(){
+        // Fallback to procedural
+        spawnPlayerProcedural(pid,x,z,color);
+    });
+}
+
+function spawnPlayer(pid,x,z,color){
+    spawnPlayerFromModel(pid,x,z,color);
+}
+function spawnPlayerProcedural(pid,x,z,color){
+    var skinMat=new BABYLON.StandardMaterial("skin_"+pid,scene);
+    skinMat.diffuseColor=BABYLON.Color3.FromHexString(color);
+    var body=BABYLON.MeshBuilder.CreateCylinder("body_"+pid,{height:1.0,diameterTop:0.35,diameterBottom:0.4},scene);
+    var head=BABYLON.MeshBuilder.CreateSphere("head_"+pid,{diameter:0.38},scene);
+    var la=BABYLON.MeshBuilder.CreateCylinder("la_"+pid,{height:0.7,diameterTop:0.1,diameterBottom:0.14},scene);
+    var ra=BABYLON.MeshBuilder.CreateCylinder("ra_"+pid,{height:0.7,diameterTop:0.1,diameterBottom:0.14},scene);
+    var ll=BABYLON.MeshBuilder.CreateCylinder("ll_"+pid,{height:0.7,diameterTop:0.16,diameterBottom:0.2},scene);
+    var rl=BABYLON.MeshBuilder.CreateCylinder("rl_"+pid,{height:0.7,diameterTop:0.16,diameterBottom:0.2},scene);
+    var weapon=BABYLON.MeshBuilder.CreateBox("wp_"+pid,{width:0.08,height:0.1,depth:0.4},scene);
+    var wmat=new BABYLON.StandardMaterial("wm_"+pid,scene);wmat.diffuseColor=new BABYLON.Color3(0.2,0.2,0.2);weapon.material=wmat;
+    body.material=skinMat;head.material=skinMat;la.material=skinMat;ra.material=skinMat;ll.material=skinMat;rl.material=skinMat;
+    var t=new BABYLON.TransformNode("t_"+pid);t.position=new BABYLON.Vector3(x,0,z);
+    body.parent=t;body.position.y=0.7;
+    head.parent=t;head.position.y=1.4;
+    la.parent=t;la.position=new BABYLON.Vector3(-0.3,0.85,0);la.rotation.z=0.2;
+    ra.parent=t;ra.position=new BABYLON.Vector3(0.3,0.85,0);ra.rotation.z=-0.2;
+    ll.parent=t;ll.position=new BABYLON.Vector3(-0.12,0.15,0);
+    rl.parent=t;rl.position=new BABYLON.Vector3(0.12,0.15,0);
+    weapon.parent=t;weapon.position=new BABYLON.Vector3(0.35,0.75,0.15);weapon.rotation.x=0.2;
+    playerMeshes[pid]=t;
+    shadowGenerator.addShadowCaster(t);
+    if(pid===playerId)myMesh=t;
+}
+
+function updatePlayer(p){
+    if(playerMeshes[p.id]){
+        playerMeshes[p.id].position.x=p.x;
+        playerMeshes[p.id].position.z=p.z;
+        var t=playerMeshes[p.id];
+        if(p.id===playerId){
+            var moving=keys['w']||keys['s']||keys['a']||keys['d']||keys['ArrowUp']||keys['ArrowDown']||keys['ArrowLeft']||keys['ArrowRight'];
+            t.getChildren().forEach(function(child){
+                if(child.name&&child.name.indexOf('ll_')===0)child.rotation.x=moving?Math.sin(Date.now()*0.01)*0.5:0;
+                if(child.name&&child.name.indexOf('rl_')===0)child.rotation.x=moving?Math.sin(Date.now()*0.01+Math.PI)*0.5:0;
+                if(child.name&&child.name.indexOf('la_')===0)child.rotation.z=moving?Math.sin(Date.now()*0.01)*0.3+0.3:0.3;
+                if(child.name&&child.name.indexOf('ra_')===0)child.rotation.z=moving?Math.sin(Date.now()*0.01+Math.PI)*0.3-0.3:-0.3;
+            });
+        }
+    }
+}
+
+function removePlayer(pid){
+    if(playerMeshes[pid]){playerMeshes[pid].dispose();delete playerMeshes[pid]}
+}
+
+canvas.onclick=function(e){
+    if(!myMesh||!gameStarted)return;
+    var forward=camera.getForwardRay().direction;
+    ws.send(JSON.stringify({accelerate:{dx:forward.x,dz:forward.z}}));
+    myMesh.getChildren().forEach(function(child){
+        if(child.name&&child.name.indexOf('wp_')===0){child.position.z+=0.1;setTimeout(function(){child.position.z-=0.1},80)}
+        if(child.name&&child.name.indexOf('ra_')===0){child.rotation.z-=0.2;setTimeout(function(){child.rotation.z+=0.2},80)}
+    });
+    // Muzzle flash
+    var flash=new BABYLON.ParticleSystem("flash_"+Date.now(),50,scene);
+    flash.particleTexture=new BABYLON.Texture("data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==",scene);
+    flash.emitter=myMesh.position.clone();flash.emitter.y=0.9;
+    flash.color1=new BABYLON.Color4(1,0.8,0,1);flash.color2=new BABYLON.Color4(1,0.5,0,1);flash.colorDead=new BABYLON.Color4(0,0,0,0);
+    flash.minSize=0.05;flash.maxSize=0.15;flash.minLifeTime=0.05;flash.maxLifeTime=0.1;flash.emitRate=500;
+    flash.start();setTimeout(function(){flash.stop()},50);setTimeout(function(){flash.dispose()},200);
+    if(!window.audioCtx2)window.audioCtx2=new(window.AudioContext||window.webkitAudioContext)();
+    var o=window.audioCtx2.createOscillator();var g=window.audioCtx2.createGain();
+    o.connect(g);g.connect(window.audioCtx2.destination);o.frequency.value=800;g.gain.value=0.05;
+    o.start();o.stop(window.audioCtx2.currentTime+0.1);
+};
+
+setInterval(function(){
+    if(!gameStarted||!myMesh)return;
+    var mx=0,mz=0;
+    if(keys['w']||keys['ArrowUp'])mz=1;
+    if(keys['s']||keys['ArrowDown'])mz=-1;
+    if(keys['a']||keys['ArrowLeft'])mx=-1;
+    if(keys['d']||keys['ArrowRight'])mx=1;
+    if(mx||mz)ws.send(JSON.stringify({move:{x:mx,z:mz}}));
+    // Health pack pickup
+    if(myMesh){
+        scene.meshes.forEach(function(mesh){
+            if(mesh.name&&mesh.name.indexOf('hp_')===0){
+                var dist=Math.sqrt(Math.pow(myMesh.position.x-mesh.position.x,2)+Math.pow(myMesh.position.z-mesh.position.z,2));
+                if(dist<1.5){mesh.dispose();ws.send(JSON.stringify({heal:true}))}
+            }
+        });
+    }
+},50);
+
+function showKillfeed(killer,victim){
+    var kf=document.createElement('div');
+    kf.textContent=killer.slice(0,4)+' killed '+victim.slice(0,4);
+    kf.style.cssText='position:absolute;right:10px;color:white;font-size:14px;animation:fadeOut 3s forwards';
+    var kfc=document.getElementById('killfeed');kfc.appendChild(kf);
+    setTimeout(function(){kf.remove()},3000);
+}
+
+engine.runRenderLoop(function(){
+    scene.render();
+    var mm=document.getElementById('minimap');
+    if(mm){
+        var mc=mm.getContext('2d');
+        mc.fillStyle='rgba(0,0,0,0.5)';mc.fillRect(0,0,120,120);
+        for(var id in playerMeshes){
+            var p=playerMeshes[id];if(!p)continue;
+            var mx=(p.position.x+25)/50*120;var mz=(p.position.z+25)/50*120;
+            mc.fillStyle=id===playerId?'lime':'red';mc.fillRect(mx-2,mz-2,4,4);
+        }
+    }
+});
+window.addEventListener('resize',function(){engine.resize()});
+</script>
+<div id="killfeed" style="position:absolute;top:10px;right:10px;z-index:15"></div>
+<style>@keyframes fadeOut{0%{opacity:1}100%{opacity:0}}</style>
+</body></html>
